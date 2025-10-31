@@ -64,13 +64,13 @@ sub_options_dict = {
 }
 
 # 加载模型 
-with open("scaler.pkl", "rb") as f:
+with open(r"D:\课程ppt\大三上\Citywalk\前端\scaler.pkl", "rb") as f:
     scaler = pickle.load(f)
-with open("kmeans.pkl", "rb") as f:
+with open(r"D:\课程ppt\大三上\Citywalk\前端\kmeans.pkl", "rb") as f:
     kmeans = pickle.load(f)
-with open("gmm.pkl", "rb") as f:
+with open(r"D:\课程ppt\大三上\Citywalk\前端\gmm.pkl", "rb") as f:
     gmm = pickle.load(f)
-with open("X_columns.pkl", "rb") as f:
+with open(r"D:\课程ppt\大三上\Citywalk\前端\X_columns.pkl", "rb") as f:
     train_columns = pickle.load(f)
 
 # 初始化 LLM 
@@ -469,6 +469,18 @@ def extract_json_from_response(response_text):
         logger.error(f"提取JSON失败: {str(e)}")
         raise
 
+def extract_deepseek_thoughts(text):
+    """提取 <think> 思考过程 和 最终回答部分"""
+    think = ""
+    answer = text
+    m = re.search(r"<think>(.*?)</think>", text, re.S)
+    if m:
+        think = m.group(1).strip()
+        answer = text.replace(m.group(0), "").strip()
+    return think, answer
+
+
+
 def call_llm_for_dataset(user_profile, user_input):
     # 解析约束（生成完整约束和展示约束）
     full_constraints, display_constraints = parse_constraints(user_input, user_profile)
@@ -528,14 +540,19 @@ def call_llm_for_dataset(user_profile, user_input):
                     {"role": "user", "content": user_prompt}
                 ],
                 temperature=0.55,
-                max_tokens=2000,
-                response_format={"type": "json_object"},
+                max_tokens=2500,
                 timeout=120
             )
 
-            # 解析并验证POI格式
-            llm_response = completion.choices[0].message.content
-            json_output = extract_json_from_response(llm_response)
+            raw_reply = completion.choices[0].message.content
+
+            # ✅ 提取 DeepSeek 思考链
+            think, answer = extract_deepseek_thoughts(raw_reply)
+            if think:
+                logger.info("[LLM思考链]:\n" + think)
+            
+
+            json_output = extract_json_from_response(answer)
             pois = json_output["pois"]
 
             # 验证并清理POI字段
@@ -605,6 +622,10 @@ def call_llm_for_dataset(user_profile, user_input):
             else:
                 raise Exception(f"LLM调用失败（重试{CONFIG['LLM_MAX_RETRIES']}次）：{error_msg}")
 
+def summarize_route(pois, dist_m, time_min):
+    names = " → ".join([p["name"] for p in pois])
+    return f"为你规划了约{dist_m/1000:.1f}公里的Citywalk路线，预计{int(time_min)}分钟：{names}"
+
 # 最终约束验证
 def validate_constraints_final(full_constraints, actual_dist, actual_duration, poi_stay_times):
     # 距离验证（允许±500米误差）
@@ -643,6 +664,36 @@ def get_session(session_id):
 def record_msg(session, role, content):
     session["messages"].append({"role": role, "content": content, "ts": int(time.time())})
 
+def pretty_log_route(endpoint, pois, dist, duration,user_input):
+    logger.info("\n" + "="*60)
+    logger.info(f"CityWalk路径规划 | 接口: {endpoint}")
+    logger.info("-"*60)
+    logger.info(f"用户输入: {user_input}")
+    logger.info(f"路线距离: {dist/1000:.2f} km")
+    logger.info(f"⏱预计总时长: {int(duration)} 分钟")
+    logger.info(f"POI数量: {len(pois)}")
+    logger.info(" ")
+
+    logger.info("POI详情：")
+    for i,p in enumerate(pois,1):
+        logger.info(f"{i}) {p['name']} ({p['longitude']}, {p['latitude']})")
+        logger.info(f"   类型: {p['type']}")
+        logger.info(f"   理由: {p['reason']}")
+        logger.info(f"   停留: {p['time']}")
+    logger.info(" ")
+
+    seq = " → ".join([p["name"] for p in pois])
+    logger.info(f"路线顺序:\n{seq}")
+    logger.info("="*60 + "\n")
+
+
+def pretty_log_profile(result):
+    logger.info("\n" + "="*60)
+    logger.info("用户画像计算完成")
+    logger.info("-"*60)
+    primary = result["tags"]["primary"]
+    logger.info(f"主类型: {primary}")
+
 # Flask 路由
 @app.route("/plan_route", methods=["GET"])
 def plan_route():
@@ -662,23 +713,16 @@ def plan_route():
         record_msg(session, "user", user_input)
 
         output, actual_dist, actual_dur, poi_times = call_llm_for_dataset(user_tags, user_input)
-
         session["last_route"] = output
-        record_msg(session, "assistant", "已为你生成路线")
 
-        return jsonify({
-            "success": True,
-            "session_id": session_id,
-            "data": output,
-            "conversation": list(session["messages"])
-        })
+        # ✅ 展示日志
+        pretty_log_route("/plan_route", output["pois"], actual_dist, actual_dur,user_input)
 
-    except Timeout:
-        logger.error("[PLAN] 外部 API 超时")
-        return jsonify({"error": "服务响应超时"}), 504
+        return jsonify({"success": True,"session_id": session_id,"data": output})
     except Exception as e:
-        logger.error(f"[PLAN] 未捕获异常: {e}", exc_info=True)
+        logger.error(e)
         return jsonify({"error": "服务器内部错误"}), 500
+
 
 @app.route("/chat_route", methods=["POST"])
 def chat_route():
@@ -688,35 +732,25 @@ def chat_route():
         user_turn = (body.get("user_input") or "").strip()
         user_tags = (body.get("user_tags") or "").strip()
 
-        if not session_id:
-            return jsonify({"error": "缺少 session_id"}), 400
-        if not user_turn:
-            return jsonify({"error": "请输入有效内容"}), 400
+        if not session_id: return jsonify({"error": "缺少session_id"}), 400
+        if not user_turn: return jsonify({"error": "请输入内容"}), 400
 
         session = get_session(session_id)
         if not session or not session.get("last_route"):
-            return jsonify({"error": "会话不存在或尚未创建路线"}), 400
+            return jsonify({"error": "请先调用 plan_route"}), 400
 
-        record_msg(session, "user", user_turn)
+        record_msg(session,"user",user_turn)
 
         output, actual_dist, actual_dur, poi_times = call_llm_for_dataset(user_tags, user_turn)
-
         session["last_route"] = output
-        record_msg(session, "assistant", "已根据你的新需求更新路线")
 
-        return jsonify({
-            "success": True,
-            "session_id": session_id,
-            "data": output,
-            "conversation": list(session["messages"])
-        })
-    except Timeout:
-        logger.error("[CHAT] 外部 API 超时")
-        return jsonify({"error": "服务响应超时"}), 504
+        # ✅ 展示日志
+        pretty_log_route("/chat_route", output["pois"], actual_dist, actual_dur,user_turn )
+
+        return jsonify({"success": True,"session_id": session_id,"data": output})
     except Exception as e:
-        logger.error(f"[CHAT] 未捕获异常: {e}", exc_info=True)
-        return jsonify({"error": "服务器内部错误"}), 500
-
+        logger.error(e)
+        return jsonify({"error": "服务器错误"}), 500
 
 @app.route("/profile", methods=["POST"])
 def profile_api():
@@ -755,14 +789,18 @@ def profile_api():
 
     # 结果 
     final_category = max(probs, key=probs.get)
-    return jsonify({
+    result = {
         "success": True,
-        "tags": {
-            "primary": final_category,
-            "all": [final_category]
-        },
+        "tags": {"primary": final_category,"all":[final_category]},
         "probs": probs
-    })
+    }
+
+    # ✅ 新版漂亮日志
+    pretty_log_profile(result)
+
+    return jsonify(result)
+
+
 
 @app.route("/")
 def index():
