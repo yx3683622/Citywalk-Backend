@@ -622,6 +622,76 @@ def call_llm_for_dataset(user_profile, user_input):
             else:
                 raise Exception(f"LLM调用失败（重试{CONFIG['LLM_MAX_RETRIES']}次）：{error_msg}")
 
+def call_llm_modify_existing_route(last_route, user_turn, user_tags):
+    """
+    ✅ 基于已有路线微调，而不是重新规划
+    """
+    old_pois = last_route["pois"]
+    poi_names = [p["name"] for p in old_pois]
+
+    sys_prompt = f"""
+你是上海CityWalk路线的微调助手。
+当前路线：{', '.join(poi_names)}
+
+任务：
+- 根据用户的新需求，只做必要微调
+- 优先保留原路线与区域
+- 允许：替换 / 删除 / 新增 少量POI
+- POI总数保持 3-6，不要大变动
+- 返回“新的POI名称列表”，不要提供经纬度
+- 格式必须是JSON：
+{{
+ "keep": [...],
+ "drop": [...],
+ "add": [...]
+}}
+"""
+
+    user_prompt = f"用户新需求：{user_turn}\n用户画像：{user_tags}"
+
+    completion = client.chat.completions.create(
+        model=CONFIG["LLM_MODEL"],
+        messages=[
+            {"role": "system", "content": sys_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        temperature=0.4,
+        max_tokens=800
+    )
+
+    raw = completion.choices[0].message.content
+    think, answer = extract_deepseek_thoughts(raw)
+    logger.info("[修改思考链] " + think[:200])
+
+    data = extract_json_from_response(answer)
+    keep = data.get("keep", poi_names)
+    drop = data.get("drop", [])
+    add = data.get("add", [])
+
+    # ✅ 保留旧 + 加入新增 - 去除删除
+    new_list = []
+    for n in poi_names:
+        if n not in drop:
+            new_list.append(n)
+    for n in add:
+        if n not in new_list:
+            new_list.append(n)
+
+    # ✅ 调用原主函数，让你现有距离控制逻辑继续用
+    new_input = " ".join(new_list)
+    output, actual_dist, actual_dur, poi_times = call_llm_for_dataset(user_tags, new_input)
+
+    # ✅ 记录思考
+    output["modify_basis"] = {
+        "old_route": poi_names,
+        "keep": keep,
+        "drop": drop,
+        "add": add,
+        "model_thought": think
+    }
+
+    return output, actual_dist, actual_dur, poi_times
+
 def summarize_route(pois, dist_m, time_min):
     names = " → ".join([p["name"] for p in pois])
     return f"为你规划了约{dist_m/1000:.1f}公里的Citywalk路线，预计{int(time_min)}分钟：{names}"
@@ -663,6 +733,7 @@ def get_session(session_id):
 
 def record_msg(session, role, content):
     session["messages"].append({"role": role, "content": content, "ts": int(time.time())})
+
 
 def pretty_log_route(endpoint, pois, dist, duration,user_input):
     logger.info("\n" + "="*60)
@@ -715,8 +786,7 @@ def plan_route():
         output, actual_dist, actual_dur, poi_times = call_llm_for_dataset(user_tags, user_input)
         session["last_route"] = output
 
-        # ✅ 展示日志
-        pretty_log_route("/plan_route", output["pois"], actual_dist, actual_dur,user_input)
+        pretty_log_route("/plan_route", output["pois"], actual_dist, actual_dur, user_input)
 
         return jsonify({"success": True,"session_id": session_id,"data": output})
     except Exception as e:
@@ -732,25 +802,36 @@ def chat_route():
         user_turn = (body.get("user_input") or "").strip()
         user_tags = (body.get("user_tags") or "").strip()
 
-        if not session_id: return jsonify({"error": "缺少session_id"}), 400
-        if not user_turn: return jsonify({"error": "请输入内容"}), 400
+        if not session_id:
+            return jsonify({"error": "缺少session_id"}), 400
+        if not user_turn:
+            return jsonify({"error": "请输入内容"}), 400
 
         session = get_session(session_id)
         if not session or not session.get("last_route"):
             return jsonify({"error": "请先调用 plan_route"}), 400
 
-        record_msg(session,"user",user_turn)
+        record_msg(session, "user", user_turn)
 
-        output, actual_dist, actual_dur, poi_times = call_llm_for_dataset(user_tags, user_turn)
+        # ✅ 用“原路线微调模式”
+        output, actual_dist, actual_dur, poi_times = call_llm_modify_existing_route(
+            session["last_route"], user_turn, user_tags
+        )
+
         session["last_route"] = output
 
-        # ✅ 展示日志
-        pretty_log_route("/chat_route", output["pois"], actual_dist, actual_dur,user_turn )
+        pretty_log_route("/chat_route", output["pois"], actual_dist, actual_dur, user_turn)
 
-        return jsonify({"success": True,"session_id": session_id,"data": output})
+        return jsonify({
+            "success": True,
+            "session_id": session_id,
+            "data": output
+        })
+
     except Exception as e:
         logger.error(e)
         return jsonify({"error": "服务器错误"}), 500
+
 
 @app.route("/profile", methods=["POST"])
 def profile_api():
