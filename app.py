@@ -64,13 +64,13 @@ sub_options_dict = {
 }
 
 # 加载模型 
-with open(r"D:\课程ppt\大三上\Citywalk\前端\scaler.pkl", "rb") as f:
+with open(r"scaler.pkl", "rb") as f:
     scaler = pickle.load(f)
-with open(r"D:\课程ppt\大三上\Citywalk\前端\kmeans.pkl", "rb") as f:
+with open(r"kmeans.pkl", "rb") as f:
     kmeans = pickle.load(f)
-with open(r"D:\课程ppt\大三上\Citywalk\前端\gmm.pkl", "rb") as f:
+with open(r"gmm.pkl", "rb") as f:
     gmm = pickle.load(f)
-with open(r"D:\课程ppt\大三上\Citywalk\前端\X_columns.pkl", "rb") as f:
+with open(r"X_columns.pkl", "rb") as f:
     train_columns = pickle.load(f)
 
 # 初始化 LLM 
