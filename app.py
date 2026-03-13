@@ -35,8 +35,8 @@ CORS(app, resources={
 #  配置 
 CONFIG = {
     "LLM_API_URL": "https://integrate.api.nvidia.com/v1",
-    "LLM_API_KEY": "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", 
-    "LLM_MODEL": "deepseek-ai/deepseek-r1",
+    "LLM_API_KEY": "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", 
+    "LLM_MODEL": "deepseek-ai/deepseek-r1-distill-llama-8b",
     "GAODE_API_KEY": "53a79ad00fd12cd20358c177df74384c", 
     "ALLOWED_TYPES": ["自然休闲型", "历史文化型", "美食体验型", "艺术潮流型", "社交娱乐型"],
     "LLM_MAX_RETRIES": 5,
@@ -59,7 +59,6 @@ sub_options_dict = {
     "food": ["美食街","餐饮探索","特色小吃"],
     "social": ["聚会","朋友小聚","热门景点拍照"]
 }
-
 # 加载模型 
 with open(r"scaler.pkl", "rb") as f:
     scaler = pickle.load(f)
@@ -135,61 +134,38 @@ def poi_match(query):
         logger.error(f"高德API失败: {str(e)}")
     return None
 
-def tsp_shortest_open_path(points):
-    """使用动态规划找到最短开放路径（哈密顿路径）"""
-    n = len(points)
-    if n == 0:
-        return []
+# 贪心 TSP
+def tsp_optimize(points, target_dist):
+    path = [0]
+    unvisited = set(range(1, len(points)))
+    # 第一步：基础最近邻排序
+    while unvisited:
+        last = path[-1]
+        next_point = min(unvisited,
+                         key=lambda x: haversine(points[last][0], points[last][1], points[x][0], points[x][1]))
+        path.append(next_point)
+        unvisited.remove(next_point)
     
-    # 计算所有点对之间的距离
-    dist = [[0]*n for _ in range(n)]
-    for i in range(n):
-        for j in range(i+1, n):
-            d = haversine(points[i][0], points[i][1], points[j][0], points[j][1])
-            dist[i][j] = d
-            dist[j][i] = d
+    # 第二步：计算当前直线距离，若偏离目标则调整首尾POI
+    current_dist = 0
+    for i in range(len(path)-1):
+        current_dist += haversine(points[path[i]][0], points[path[i]][1], points[path[i+1]][0], points[path[i+1]][1])
     
-    # 动态规划表：dp[mask][i]表示访问过mask中的点，最后停在i的最短路径长度
-    # 这里mask使用位掩码表示访问过的点
-    dp = [[float('inf')]*n for _ in range(1<<n)]
-    parent = [[-1]*n for _ in range(1<<n)]
+    # 距离过短调整
+    if current_dist < CONFIG["ROUTE_MIN_DISTANCE"]:
+        if unvisited:
+            farthest_idx = max(unvisited, key=lambda x: haversine(points[path[0]][0], points[path[0]][1], points[x][0], points[x][1]))
+            path[-1] = farthest_idx
+        else:
+            path = path[::-1]  # 反转顺序延长路径
+    # 距离过长调整
+    elif current_dist > CONFIG["ROUTE_MAX_DISTANCE"]:
+        if unvisited:
+            nearest_idx = min(unvisited, key=lambda x: haversine(points[path[0]][0], points[path[0]][1], points[x][0], points[x][1]))
+            path[-1] = nearest_idx
     
-    # 初始化：从每个点开始
-    for i in range(n):
-        dp[1<<i][i] = 0
-    
-    # 动态规划
-    for mask in range(1<<n):
-        for i in range(n):
-            if dp[mask][i] == float('inf'):
-                continue
-            for j in range(n):
-                if not (mask & (1<<j)):  # j没有被访问过
-                    new_mask = mask | (1<<j)
-                    if dp[new_mask][j] > dp[mask][i] + dist[i][j]:
-                        dp[new_mask][j] = dp[mask][i] + dist[i][j]
-                        parent[new_mask][j] = i
-    
-    # 找到最短开放路径（访问所有点）
-    full_mask = (1<<n) - 1
-    min_dist = float('inf')
-    last_point = -1
-    for i in range(n):
-        if dp[full_mask][i] < min_dist:
-            min_dist = dp[full_mask][i]
-            last_point = i
-    
-    # 重建路径
-    path = []
-    mask = full_mask
-    curr = last_point
-    while curr != -1:
-        path.append(curr)
-        next_curr = parent[mask][curr]
-        mask &= ~(1<<curr)
-        curr = next_curr
-    
-    return path[::-1]  # 反转得到从起点开始的路径
+    return path
+
 # 高德 walking 路线
 def get_gaode_route(points):
     DIR_DELTA = {
@@ -374,7 +350,7 @@ def is_route_in_range(pois, full_constraints):
 def adjust_route_to_range(pois, full_constraints):
     # 优化POI顺序
     points = [(p['longitude'], p['latitude']) for p in pois]
-    optimized_indices = tsp_shortest_open_path(points)
+    optimized_indices = tsp_optimize(points, full_constraints["distance_base"])
     adjusted_pois = [pois[i] for i in optimized_indices]
     
     # 获取实际步行距离
@@ -406,7 +382,7 @@ def adjust_route_to_range(pois, full_constraints):
             adjusted_pois.append(formatted_poi)
             # 重新优化顺序并计算距离
             points = [(p['longitude'], p['latitude']) for p in adjusted_pois]
-            optimized_indices = tsp_shortest_open_path(points)
+            optimized_indices = tsp_optimize(points, full_constraints["distance_base"])
             adjusted_pois = [adjusted_pois[i] for i in optimized_indices]
             route_info = get_gaode_route([(p['longitude'], p['latitude']) for p in adjusted_pois])
             actual_dist = route_info["distance"]
@@ -425,7 +401,7 @@ def adjust_route_to_range(pois, full_constraints):
             adjusted_pois.pop(farthest_idx)
             # 重新计算
             points = [(p['longitude'], p['latitude']) for p in adjusted_pois]
-            optimized_indices = tsp_shortest_open_path(points)
+            optimized_indices = tsp_optimize(points, full_constraints["distance_min"])
             adjusted_pois = [adjusted_pois[i] for i in optimized_indices]
             route_info = get_gaode_route([(p['longitude'], p['latitude']) for p in adjusted_pois])
             actual_dist = route_info["distance"]
@@ -499,6 +475,8 @@ def extract_deepseek_thoughts(text):
         answer = text.replace(m.group(0), "").strip()
     return think, answer
 
+
+
 def call_llm_for_dataset(user_profile, user_input):
     # 解析约束（生成完整约束和展示约束）
     full_constraints, display_constraints = parse_constraints(user_input, user_profile)
@@ -547,7 +525,7 @@ def call_llm_for_dataset(user_profile, user_input):
 """
 
     user_prompt = f"用户画像：{user_profile}\n用户需求：{user_input}\n请按3-10km区间和{full_constraints['distance_base']/1000}km基准生成路线"
-
+    logger.info(f'用户需求: {user_input}')
     # LLM调用+重试
     for attempt in range(CONFIG["LLM_MAX_RETRIES"]):
         try:
@@ -640,7 +618,6 @@ def call_llm_for_dataset(user_profile, user_input):
             else:
                 raise Exception(f"LLM调用失败（重试{CONFIG['LLM_MAX_RETRIES']}次）：{error_msg}")
 
-
 def call_llm_modify_existing_route(last_route, user_turn, user_tags):
     old_pois = last_route["pois"]
     poi_names = [p["name"] for p in old_pois]
@@ -704,7 +681,6 @@ def call_llm_modify_existing_route(last_route, user_turn, user_tags):
     }
 
     return output, actual_dist, actual_dur, poi_times
-
 
 def summarize_route(pois, dist_m, time_min):
     names = " → ".join([p["name"] for p in pois])
