@@ -37,7 +37,7 @@ CONFIG = {
     "LLM_API_URL": "https://integrate.api.nvidia.com/v1",
     "LLM_API_KEY": "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", 
     "LLM_MODEL": "deepseek-ai/deepseek-r1-distill-llama-8b",
-    "GAODE_API_KEY": "cf0359fd247c305b4bbf8d3dba7bae87", 
+    "GAODE_API_KEY": "53a79ad00fd12cd20358c177df74384c", 
     "ALLOWED_TYPES": ["自然休闲型", "历史文化型", "美食体验型", "艺术潮流型", "社交娱乐型"],
     "LLM_MAX_RETRIES": 5,
     "LLM_RETRY_DELAYS": [2, 4, 8, 16, 32],
