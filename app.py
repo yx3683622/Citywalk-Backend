@@ -36,12 +36,8 @@ CORS(app, resources={
 CONFIG = {
     "LLM_API_URL": "https://integrate.api.nvidia.com/v1",
     "LLM_API_KEY": "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", 
-<<<<<<< HEAD
     #"LLM_MODEL": "deepseek-ai/deepseek-r1-distill-llama-8b",
     "LLM_MODEL": "deepseek-ai/deepseek-v3.2",
-=======
-    "LLM_MODEL": "deepseek-ai/deepseek-r1-distill-llama-8b",
->>>>>>> 0fd6c05aa2f782f3b4c49a5857eb4ccd610edcb4
     "GAODE_API_KEY": "53a79ad00fd12cd20358c177df74384c", 
     "ALLOWED_TYPES": ["自然休闲型", "历史文化型", "美食体验型", "艺术潮流型", "社交娱乐型"],
     "LLM_MAX_RETRIES": 5,
