@@ -36,7 +36,8 @@ CORS(app, resources={
 CONFIG = {
     "LLM_API_URL": "https://integrate.api.nvidia.com/v1",
     "LLM_API_KEY": "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", 
-    "LLM_MODEL": "deepseek-ai/deepseek-r1-distill-llama-8b",
+    #"LLM_MODEL": "deepseek-ai/deepseek-r1-distill-llama-8b",
+    "LLM_MODEL": "deepseek-ai/deepseek-v3.2",
     "GAODE_API_KEY": "53a79ad00fd12cd20358c177df74384c", 
     "ALLOWED_TYPES": ["自然休闲型", "历史文化型", "美食体验型", "艺术潮流型", "社交娱乐型"],
     "LLM_MAX_RETRIES": 5,
@@ -496,6 +497,7 @@ def call_llm_for_dataset(user_profile, user_input):
 - 数量：{CONFIG['POI_COUNT_RANGE'][0]}-{CONFIG['POI_COUNT_RANGE'][1]}个（上海真实地点）
 - 类型：从{', '.join(CONFIG['ALLOWED_TYPES'])}中选，优先{full_constraints['type']}
 - 经纬度：精确到小数点后4位（如121.4875，31.2272），必须为数字类型（无引号）
+- 必须严格遵守用户需求，比如如果用户说在杨浦区，则所有POI都要在杨浦区，要仔细检查是否符合用户要求
 
 ### 输出格式（严格JSON，仅包含指定字段，禁止添加任何额外字段）
 {{
@@ -522,6 +524,8 @@ def call_llm_for_dataset(user_profile, user_input):
 - 输出只能是上述格式的JSON，不能有任何多余文字
 - 严格按照字段列表输出，不得添加额外字段（如location、address等）
 - longitude和latitude必须是数字类型，不能带引号
+- 必须严格遵守用户需求，比如如果用户说在杨浦区，则所有POI都要在杨浦区，要仔细检查是否符合用户要求
+- 不要瞎联想到其他区域的POI，必须是用户需求区域内的真实POI，且符合类型要求
 """
 
     user_prompt = f"用户画像：{user_profile}\n用户需求：{user_input}\n请按3-10km区间和{full_constraints['distance_base']/1000}km基准生成路线"
